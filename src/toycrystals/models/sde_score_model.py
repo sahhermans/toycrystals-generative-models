@@ -311,14 +311,23 @@ def save_sde_samples(
     t_end: float = 1e-3,
     sampler: str = "ode",   # "ode" or "sde"
 ) -> None:
-    """Save a 6x6 grid: cycle lattice types, sweep theta in [0, pi/3]."""
+    """Save a preview grid.
+
+    Conditioning is deterministic for easy visual comparison:
+      - y_cat cycles over lattice types
+      - theta sweeps linearly in [0, theta_max]
+
+    Historically this function always saved a fixed 6x6 grid (n=36). We now
+    support arbitrary n by using a square-ish grid and leaving unused tiles blank.
+    """
     model.eval()
 
     y_cat = torch.tensor([i % model.n_types for i in range(n)], device=device, dtype=torch.int64)
     thetas = torch.linspace(0.0, theta_max, steps=n, device=device)
 
     y_cont = torch.zeros((n, model.y_cont_dim), device=device)
-    y_cont[:, 1] = thetas
+    if model.y_cont_dim > 1:
+        y_cont[:, 1] = thetas
 
     if sampler == "ode":
         x = sample_probability_flow_ode(
@@ -345,10 +354,12 @@ def save_sde_samples(
     else:
         raise ValueError(f"Unknown sampler='{sampler}'. Use 'ode' or 'sde'.")
 
-    fig, axes = plt.subplots(6, 6, figsize=(6, 6))
+    side = int(math.ceil(math.sqrt(n)))
+    fig, axes = plt.subplots(side, side, figsize=(side, side))
     fig.suptitle(f"{sampler} | steps={steps} | cfg={cfg:.2f} | t_end={t_end:g}", fontsize=10)
     for i, ax in enumerate(axes.flat):
-        ax.imshow(x[i, 0].cpu(), cmap="gray", vmin=0.0, vmax=1.0)
+        if i < n:
+            ax.imshow(x[i, 0].cpu(), cmap="gray", vmin=0.0, vmax=1.0)
         ax.axis("off")
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)

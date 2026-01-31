@@ -2,9 +2,55 @@
 import argparse
 import os
 import math
+from pathlib import Path
+
 import torch
 
-from toycrystals.models.sde_score_model import CondUNetTiny, VPSDE, save_sde_samples
+from toycrystals.models.sde_score_model import (
+    CondUNetTiny,
+    VPSDE,
+    save_sde_samples,
+    sample_probability_flow_ode,
+    sample_reverse_sde_euler_maruyama,
+)
+
+
+@torch.no_grad()
+def _sample_batch(
+    model: CondUNetTiny,
+    sde: VPSDE,
+    y_cat: torch.Tensor,
+    y_cont: torch.Tensor,
+    sampler: str,
+    steps: int,
+    cfg: float,
+    t_end: float,
+) -> torch.Tensor:
+    """Return x in [0,1] with shape [B,1,64,64]."""
+    B = int(y_cat.shape[0])
+    if sampler == "ode":
+        return sample_probability_flow_ode(
+            model=model,
+            sde=sde,
+            y_cat=y_cat,
+            y_cont=y_cont,
+            img_shape=(B, 1, 64, 64),
+            n_steps=steps,
+            guidance_scale=cfg,
+            t_end=t_end,
+        )
+    if sampler == "sde":
+        return sample_reverse_sde_euler_maruyama(
+            model=model,
+            sde=sde,
+            y_cat=y_cat,
+            y_cont=y_cont,
+            img_shape=(B, 1, 64, 64),
+            n_steps=steps,
+            guidance_scale=cfg,
+            t_end=t_end,
+        )
+    raise ValueError(f"Unknown sampler='{sampler}'. Use 'ode' or 'sde'.")
 
 # example call
 # python scripts/sample_sde_score_model.py \
@@ -56,6 +102,19 @@ def main() -> int:
 
     # output
     p.add_argument("--out-path", default=None, help="Where to save the sample grid png")
+
+    # Optional: also save raw samples to a .pt file for quantitative evaluation.
+    # This does NOT change the default behaviour (PNG grid is still written).
+    p.add_argument("--pt-out", type=str, default=None, help="Optional .pt output path for raw samples")
+    p.add_argument("--pt-mode", type=str, default="random", choices=["random", "grid"], help="Condition sampling mode for pt-out")
+    p.add_argument("--pt-n", type=int, default=2048, help="Number of samples to save to pt-out")
+    p.add_argument("--pt-seed", type=int, default=0, help="RNG seed used for pt-out sampling")
+    p.add_argument(
+        "--pt-batch-size",
+        type=int,
+        default=64,
+        help="Batch size used when sampling pt-out (reduce if you hit CUDA OOM)",
+    )
 
     args = p.parse_args()
     device = torch.device(args.device)
@@ -126,6 +185,67 @@ def main() -> int:
         t_end=args.t_end,
         sampler=args.sampler
     )
+
+    # --- Optional: save raw samples for evaluation ---
+    if args.pt_out is not None:
+        # Make evaluation-friendly samples in the same format as build_dataset.py.
+        torch.manual_seed(int(args.pt_seed))
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(int(args.pt_seed))
+
+        n_pt = int(args.pt_n)
+        if n_pt <= 0:
+            raise ValueError("pt-n must be > 0")
+
+        if args.pt_mode == "grid":
+            y_cat = torch.tensor([i % model.n_types for i in range(n_pt)], device=device, dtype=torch.int64)
+            thetas = torch.linspace(0.0, args.theta_max, steps=n_pt, device=device)
+            y_cont = torch.zeros((n_pt, model.y_cont_dim), device=device)
+            if model.y_cont_dim > 1:
+                y_cont[:, 1] = thetas
+        else:  # random
+            y_cat = torch.randint(low=0, high=model.n_types, size=(n_pt,), device=device, dtype=torch.int64)
+            thetas = torch.rand((n_pt,), device=device) * float(args.theta_max)
+            y_cont = torch.zeros((n_pt, model.y_cont_dim), device=device)
+            if model.y_cont_dim > 1:
+                y_cont[:, 1] = thetas
+
+        bs = int(args.pt_batch_size)
+        if bs <= 0:
+            raise ValueError("pt-batch-size must be > 0")
+
+        # Sample in chunks to keep peak GPU memory low.
+        x_u8_chunks = []
+        for start in range(0, n_pt, bs):
+            end = min(start + bs, n_pt)
+            x = _sample_batch(
+                model=model,
+                sde=sde,
+                y_cat=y_cat[start:end],
+                y_cont=y_cont[start:end],
+                sampler=args.sampler,
+                steps=args.steps,
+                cfg=args.cfg,
+                t_end=args.t_end,
+            )
+            x_u8 = (x.clamp(0.0, 1.0) * 255.0 + 0.5).to(torch.uint8).cpu()
+            x_u8_chunks.append(x_u8)
+            # Help the allocator on smaller GPUs / long runs.
+            del x
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
+        x_u8 = torch.cat(x_u8_chunks, dim=0)
+        out = {
+            "x_u8": x_u8,
+            "y_cat": y_cat.cpu(),
+            "y_cont": y_cont.to(torch.float32).cpu(),
+        }
+
+        pt_path = Path(args.pt_out)
+        pt_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(out, pt_path)
+        print(f"Saved raw samples -> {pt_path}")
 
     print(f"Saved samples -> {args.out_path}")
     return 0
