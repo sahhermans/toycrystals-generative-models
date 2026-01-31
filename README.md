@@ -1,108 +1,182 @@
 # ToyCrystals — conditional generation on synthetic lattice images
 
-This repo explores conditional generation on a synthetic “toy-crystals” dataset: periodic lattice images rendered as Gaussian “atoms”.
+This repo explores **conditional generation** on a synthetic *toy-crystals* dataset: periodic lattice images rendered as Gaussian “atoms”.
 
-There are two main pipelines:
+It implements and compares three approaches:
 
-A) **VAE pipeline (with two priors)**
-- Train a conditional VAE (good reconstructions).
-- For sampling, compare:
-  - **standard Gaussian prior**: z ~ N(0, I)  (baseline)
-  - **learned latent diffusion prior**: a diffusion model trained on VAE latents to approximate a better conditional prior p(z | c)
+1. **VAE + standard prior** (baseline)
+2. **VAE + learned diffusion prior in latent space** (best overall here)
+3. **Direct score-based diffusion on images (VP-SDE)** (no VAE)
 
-B) **Direct diffusion pipeline**
-- A VP-SDE score model trained directly on images (no VAE), sampled with probability-flow ODE or reverse-SDE.
-- Followed standard diffusion / SDE notation as used in MIT’s diffusion course materials: <br>
-  **MIT 6.S184: Generative AI with Stochastic Differential Equations** <br>
-  Course site: https://diffusion.csail.mit.edu/2025/
+Diffusion/SDE notation is aligned with the MIT diffusion course lecture notes ([PDF](https://diffusion.csail.mit.edu/docs/lecture-notes.pdf)). See [`docs/reproduce.md`](docs/reproduce.md) for the exact commands used for the reported runs.
 
----
+## Results
 
-## Results (figures in `assets/`)
+### Qualitative
 
-## A) VAE pipeline
-
-### A1) Conditional VAE (reconstructions)
+<div align="center"><b>VAE reconstructions</b></div>
 <p align="center">
-  <img src="assets/vae_standard_prior/vae_recon.png" width="900" />
+  <img src="assets/vae_standard_prior/vae_recon.png" width="700" />
 </p>
 
-### A2) Sampling with different priors
+<div align="center"><b>Sampling comparison (same conditioning distribution)</b></div>
 
+<div align="center">
 <table>
   <tr>
-    <td align="center"><b>Standard prior sampling</b><br/>z ~ N(0, I)</td>
-    <td align="center"><b>MoP / aggregated-posterior proxy</b></td>
+    <td align="center">
+      <b>VAE + standard prior</b><br/>
+      <sub>z ~ N(0, I)</sub><br/>
+      <img src="assets/vae_standard_prior/vae_standard_prior_sampling.png" width="450" />
+    </td>
+    <td align="center">
+      <b>VAE + latent diffusion prior</b><br/>
+      <sub>DDIM sampling in latent space</sub><br/>
+      <img src="assets/vae_latent_diffusion_prior/vae_latent_diffusion_prior_sampling.png" width="450" />
+    </td>
   </tr>
   <tr>
-    <td><img src="assets/vae_standard_prior/vae_standard_prior_sampling.png" width="430"/></td>
-    <td><img src="assets/vae_standard_prior/vae_mop_sampling.png" width="430"/></td>
+    <td align="center">
+      <b>VAE + MoP reference</b><br/>
+      <sub>posterior-based baseline</sub><br/>
+      <img src="assets/vae_standard_prior/vae_mop_sampling.png" width="450" />
+    </td>
+    <td align="center">
+      <b>Direct VP-SDE</b><br/>
+      <sub>reverse-SDE sampler</sub><br/>
+      <img src="assets/score_based_diffusion/score_based_diffusion_samples.png" width="450" />
+    </td>
   </tr>
 </table>
+</div>
 
-**Qualitative comparison (why the prior matters)**  
-- The VAE decoder learns a good mapping from “in-distribution” latents to images (reconstructions are crisp).
-- But the VAE’s standard prior z ~ N(0, I) can be a mismatch to the encoder’s aggregated posterior, so samples can drift off the data manifold.
-- MoP sampling is an intentionally strong reference point because it samples around posteriors of real datapoints (so it tends to stay on-manifold).
 
-### A3) Latent diffusion prior (improving VAE sampling)
-Instead of sampling z from N(0, I), a diffusion model is trained in latent space on cached VAE latents (often using z = μ). At sampling time, it generates z conditioned on c, and the VAE decoder maps z → image.
+### Quantitative (held-out test set)
 
-<p align="center">
-  <img src="assets/vae_latent_diffusion_prior/vae_latent_diffusion_prior_sampling.png" width="430" />
-</p>
+Lower is better.
 
-**Qualitative comparison (standard prior vs diffusion prior)**  
-- Standard-prior sampling is the simplest baseline, but it tends to produce more “off-manifold” artefacts.
-- The latent diffusion prior usually gives **more consistent** samples because it is trained to match the latent distribution actually used by the decoder (conditioned on c), rather than assuming a single global Gaussian.
-- MoP can still be hard to beat visually because it is anchored to real datapoints; the diffusion prior is the more realistic “learned prior” alternative.
+| method | mass_w1 ↓ | fft_radial_l2 ↓ |
+|---|---:|---:|
+| VAE + standard prior | 0.01148 | 0.00218 |
+| VAE + diffusion prior (DDIM 400) | **0.00144** | **0.000313** |
+| VAE + MoP (posterior-based reference) | 0.00307 | **0.000256** |
+| VP-SDE (reverse-SDE sampler) | 0.00202 | 0.000584 |
+| VP-SDE (probability-flow ODE) | 0.00811 | 0.00173 |
 
-**Diffusion-prior training settings used for the committed figure**
-- T = 1000
-- width = 1024
-- beta_end = 0.05
-- epochs = 300
+Takeaway: the **latent diffusion prior** provides the best overall match on these two simple metrics, while MoP remains a strong “anchored-to-data” reference.
 
----
+## Dataset
 
-## B) Direct diffusion pipeline (VP-SDE on images)
+Each sample is a single-channel image $x \in [0,1]^{1\times H\times W}$ containing a periodic lattice (Gaussian “atoms”).
 
-This approach trains directly on images (no VAE). It supports:
-- probability-flow ODE sampling (deterministic)
-- reverse-SDE sampling (stochastic; Euler–Maruyama)
-- classifier-free guidance (CFG)
-- optional EMA weights
+We train conditionally on $c$, consisting of:
 
-<p align="center">
-  <img src="assets/score_based_diffusion/score_based_diffusion_samples.png" width="430" />
-</p>
+- a categorical **lattice type** $c_{\mathrm{cat}}$
+- continuous **rotation / geometry features** $c_{\mathrm{cont}}$ (encoded as a small vector; e.g. sine/cosine-style features)
 
-**VP-SDE sampling settings used for the final grid**
-- steps = 300
-- cfg = 1.50
-- t_end = 0.005
-- sampler = reverse-SDE (Euler–Maruyama)
-- EMA enabled
+Datasets are stored as `.pt` tensors on disk (see `scripts/build_dataset.py`).
 
-## Quickstart (commands)
+## Models
 
-### Install
+### Conditional VAE
+
+We use a conditional VAE with encoder $q_\phi(z\mid x,c)$ and decoder $p_\theta(x\mid z,c)$, with a standard Normal prior $p(z)=\mathcal{N}(0,I)$.
+
+**Objective (negative ELBO)**
+
+$$
+\mathcal{L}_{\mathrm{VAE}}(\theta,\phi) = \mathbb{E}_{q_\phi(z\mid x,c)}\big[-\log p_\theta(x\mid z,c)\big] + \beta\,\mathrm{KL}\!\big(q_\phi(z\mid x,c)\,\|\,\mathcal{N}(0,I)\big).
+$$
+
+Key point: even with a moderate $\beta$, the *aggregated posterior*
+
+$$
+q(z\mid c)=\mathbb{E}_{x\sim p_{\mathrm{data}}(x\mid c)}\left[q_\phi(z\mid x,c)\right]
+$$
+
+can be a poor match to $\mathcal{N}(0,I)$. This is why standard-prior sampling $z\sim\mathcal{N}(0,I)$ can produce “off-manifold” artefacts, even if reconstructions are good.
+
+### Latent diffusion prior
+
+Instead of sampling $z\sim\mathcal{N}(0,I)$, we train a diffusion model in **latent space** to approximate a better conditional prior $p_\psi(z\mid c)$.
+
+We train on cached VAE latents (typically the posterior mean $z_0 = \mu_\phi(x,c)$).
+
+**Forward noising process (DDPM form)**  
+With $\alpha_t = 1-\beta_t$ and $\bar\alpha_t = \prod_{s=1}^t \alpha_s$:
+
+$$
+z_t = \sqrt{\bar\alpha_t}\,z_0 + \sqrt{1-\bar\alpha_t}\,\varepsilon,
+\qquad \varepsilon\sim\mathcal{N}(0,I).
+$$
+
+**Training objective (noise prediction)**
+
+$$
+\mathcal{L}_{\mathrm{diff}}(\psi)=
+\mathbb{E}_{t,\varepsilon,z_0,c}\left[\lVert \varepsilon - \varepsilon_\psi(z_t,t,c) \rVert_2^2\right].
+$$
+
+Sampling uses DDIM-style updates (deterministic, fewer steps) or the full $T$-step process, producing $z_0\sim p_\psi(z\mid c)$ which is decoded by the VAE: $x\leftarrow p_\theta(x\mid z_0,c)$.
+
+### Direct score-based diffusion (VP-SDE)
+
+We also train a score model directly on images (no VAE) using the VP-SDE parameterisation:
+
+$$
+\mathrm{d}x = -\tfrac12\beta(t)\,x\,\mathrm{d}t + \sqrt{\beta(t)}\,\mathrm{d}w_t.
+$$
+
+The reverse-time SDE has drift that depends on the score $\nabla_x\log p_t(x\mid c)$:
+
+$$
+\mathrm{d}x =
+\left[-\tfrac12\beta(t)x - \beta(t)\nabla_x\log p_t(x\mid c)\right]\mathrm{d}t
++\sqrt{\beta(t)}\,\mathrm{d}\bar w_t.
+$$
+
+The associated probability-flow ODE is:
+
+$$
+\frac{\mathrm{d}x}{\mathrm{d}t} = -\tfrac12\beta(t)x - \tfrac12\beta(t)\nabla_x\log p_t(x\mid c).
+$$
+
+At sampling time we use either the reverse-SDE sampler (stochastic) or the probability-flow ODE (deterministic).
+
+## Evaluation
+
+We evaluate generated samples against a held-out test set using two simple distribution-level metrics:
+
+1. **`mass_w1`**: Wasserstein-1 distance between **per-image mean intensities**  
+   $m(x) = \frac{1}{HW}\sum_{i,j} x_{ij}$.
+2. **`fft_radial_l2`**: $\ell_2$ distance between the **mean radial power spectra** of real vs generated images (normalised).
+
+Run:
+
 ```bash
-pip install torch
-pip install -e .
-
-# 1) build dataset
-python scripts/build_dataset.py --out data/toycrystals_train_rotonly.pt --n-samples 50000 --img-size 64 --n-types 4 --rot-only
-
-# 2) train VAE
-python scripts/train_vae.py --data-path data/toycrystals_train_rotonly.pt --epochs 15 --batch-size 128 --z-dim 32
-
-# 3) train latent diffusion prior (settings used for the figures)
-python scripts/train_diffusion_prior.py --T 1000 --beta-start 1e-4 --beta-end 0.05 --width 1024 --t-emb-dim 64 --batch-size 256 --lr 1e-4 --epochs 300 --z-target mu --latent-cache data/latents_mu_T1000_b005.pt --prior-ckpt checkpoints/prior_mu_T1000_b005_w1024_lr1e-4.pt
-
-# 4) train VP-SDE score model
-python scripts/train_sde_score_model.py --data-path data/toycrystals_train_rotonly.pt --epochs 40 --batch-size 128 --lr 1e-4 --beta-min 0.1 --beta-max 30 --p-uncond 0.1 --ema-decay 0.999
-
-# 5) sample VP-SDE (settings used for the final grid)
-python scripts/sample_sde_score_model.py --device cuda --out-dir runs/sde_score/<run_dir_or_checkpoint_dir> --ckpt last --steps 300 --cfg 1.5 --t-end 0.005 --sampler sde --use-ema 1 --n 36
+python scripts/evaluate_sample_quality.py   --real data/toycrystals_test_rotonly_seed1.pt   --gen vae_standard=results/gen_vae_standard.pt   --gen vae_diffusion=results/gen_vae_diff_ddim400.pt   --gen sde=results/gen_sde.pt   --n-real 2048   --n-gen 2048   --csv results/quality_scores.csv
 ```
+
+You can pass `--gen name=path.pt` **as many times as you like**.
+
+The CSV is written with **semicolon delimiters** (Dutch Excel-friendly).
+
+## Quickstart
+
+Install:
+
+```bash
+pip install -e .
+```
+
+For the exact commands used to produce the figures and final numbers in this README, see:
+
+- [`docs/reproduce.md`](docs/reproduce.md)
+
+If you only want to *score existing* `.pt` files, the evaluation command above is sufficient.
+
+## Repo structure (high level)
+
+- `scripts/`: training, sampling, evaluation entry points
+- `src/toycrystals/`: model and dataset code
+- `assets/`: figures used in this README
