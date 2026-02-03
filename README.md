@@ -5,10 +5,12 @@ This repo explores **conditional generation** on a synthetic *toy-crystals* data
 It implements and compares three approaches:
 
 1. **VAE + standard prior** (baseline)
-2. **VAE + learned diffusion prior in latent space** (best overall here)
+2. **VAE + learned diffusion prior in latent space** (best overall performance here)
 3. **Direct score-based diffusion on images (VP-SDE)** (no VAE)
 
-Diffusion/SDE notation is aligned with the MIT diffusion course lecture notes ([PDF](https://diffusion.csail.mit.edu/docs/lecture-notes.pdf)). See [`docs/reproduce.md`](docs/reproduce.md) for the exact commands used for the reported runs.
+Score-based diffusion notation is aligned with the MIT diffusion course lecture notes ([PDF](https://diffusion.csail.mit.edu/docs/lecture-notes.pdf)). 
+
+See [`docs/reproduce.md`](docs/reproduce.md) for the exact commands used for the reported runs.
 
 ## Results
 
@@ -50,20 +52,45 @@ Diffusion/SDE notation is aligned with the MIT diffusion course lecture notes ([
 </table>
 </div>
 
-
 ### Quantitative (held-out test set)
 
-Lower is better.
+Scores are computed on the held-out test split using 2,048 real and 2,048 generated samples per method (see `docs/reproduce.md`). We report `mass_w1` and `fft_radial_l2` as simple, fast proxies for global intensity and lattice frequency structure, respectively.
 
-| method | mass_w1 ↓ | fft_radial_l2 ↓ |
+Lower is better. Values are shown as x1e-3 for readability.
+
+<div align="center">
+
+| method | mass_w1 (x1e-3) | fft_radial_l2 (x1e-3) |
 |---|---:|---:|
-| VAE + standard prior | 0.01148 | 0.00218 |
-| VAE + diffusion prior (DDIM 400) | **0.00144** | **0.000313** |
-| VAE + MoP (posterior-based reference) | 0.00307 | **0.000256** |
-| VP-SDE (reverse-SDE sampler) | 0.00202 | 0.000584 |
-| VP-SDE (probability-flow ODE) | 0.00811 | 0.00173 |
+| VAE + standard prior | 11.48 | 2.18 |
+| VAE + diffusion prior (DDIM 400) | **1.44** | 0.313 |
+| VAE + MoP (posterior-based reference) | 3.07 | **0.256** |
+| VP-SDE (reverse-SDE sampler) | 2.02 | 0.584 |
+| VP-SDE (probability-flow ODE) | 8.11 | 1.73 |
 
-Takeaway: the **latent diffusion prior** provides the best overall match on these two simple metrics, while MoP remains a strong “anchored-to-data” reference.
+</div>
+
+Takeaway: the **latent diffusion prior** provides the best overall match on these two simple metrics.
+
+Remark: MoP is a posterior-based, data-anchored baseline that samples from a finite pool of encoded training examples. It preserves individual examples but does not explicitly optimize these distribution-level metrics (mean intensity and radial FFT), so it can score lower than a learned diffusion prior on them.
+
+## Quickstart
+
+Prereqs: Python 3.10+ and PyTorch (installed separately).
+
+Install:
+
+```bash
+pip install -e .
+```
+
+Smoke test (CPU, no dataset files): trains a small VAE for a couple epochs and writes preview PNGs to `results/`.
+
+```bash
+python scripts/train_vae.py --device cpu --epochs 2 --n-samples 5000 --data-path ""
+```
+
+For the exact commands used to reproduce the figures and reported numbers (including dataset `.pt` files and evaluation), see `docs/reproduce.md`.
 
 ## Dataset
 
@@ -75,6 +102,8 @@ We train conditionally on $c$, consisting of:
 - continuous **rotation / geometry features** $c_{\mathrm{cont}}$ (encoded as a small vector; e.g. sine/cosine-style features)
 
 Datasets are stored as `.pt` tensors on disk (see `scripts/build_dataset.py`).
+
+The synthetic generator in `src/toycrystals/data.py` can also vary lattice spacing, vacancies, and jitter; the `--rot-only` / `--simple` flags in `scripts/build_dataset.py` restrict these to simpler variants used for these specific results.
 
 ## Models
 
@@ -117,7 +146,7 @@ $$
 \mathbb{E}_{t,\varepsilon,z_0,c}\left[\lVert \varepsilon - \varepsilon_\psi(z_t,t,c) \rVert_2^2\right].
 $$
 
-Sampling uses DDIM-style updates (deterministic, fewer steps) or the full $T$-step process, producing $z_0\sim p_\psi(z\mid c)$ which is decoded by the VAE: $x\leftarrow p_\theta(x\mid z_0,c)$.
+Sampling uses DDIM-style updates (deterministic, fewer steps; $\eta=0$ only in current code) or the full $T$-step process, producing $z_0\sim p_\psi(z\mid c)$ which is decoded by the VAE: $x\leftarrow p_\theta(x\mid z_0,c)$.
 
 ### Direct score-based diffusion (VP-SDE)
 
@@ -145,35 +174,15 @@ At sampling time we use either the reverse-SDE sampler (stochastic) or the proba
 
 ## Evaluation
 
-We evaluate generated samples against a held-out test set using two simple distribution-level metrics:
+We evaluate generated samples against a held-out test set using two simple distribution-level metrics. We picked these because they are fast to compute, easy to interpret on this toy dataset, and they roughly probe two things we care about: (1) overall “mass” / brightness (how many atoms, how strong) and (2) lattice periodicity / spacing in frequency space.
 
 1. **`mass_w1`**: Wasserstein-1 distance between **per-image mean intensities**  
    $m(x) = \frac{1}{HW}\sum_{i,j} x_{ij}$.
 2. **`fft_radial_l2`**: $\ell_2$ distance between the **mean radial power spectra** of real vs generated images (normalised).
 
-Run:
+These are coarse global statistics. `mass_w1` ignores spatial structure, and `fft_radial_l2` uses a radial average (so it discards orientation information), meaning a model can score well while still having the wrong lattice type/rotation, local defects, poor diversity, or other perceptual issues. We therefore treat them as lightweight proxies and most strongly judged the models based on the qualitative samples.
 
-```bash
-python scripts/evaluate_sample_quality.py   --real data/toycrystals_test_rotonly_seed1.pt   --gen vae_standard=results/gen_vae_standard.pt   --gen vae_diffusion=results/gen_vae_diff_ddim400.pt   --gen sde=results/gen_sde.pt   --n-real 2048   --n-gen 2048   --csv results/quality_scores.csv
-```
-
-You can pass `--gen name=path.pt` **as many times as you like**.
-
-The CSV is written with **semicolon delimiters** (Dutch Excel-friendly).
-
-## Quickstart
-
-Install:
-
-```bash
-pip install -e .
-```
-
-For the exact commands used to produce the figures and final numbers in this README, see:
-
-- [`docs/reproduce.md`](docs/reproduce.md)
-
-If you only want to *score existing* `.pt` files, the evaluation command above is sufficient.
+For the exact command used to produce the numbers reported in this README, see `docs/reproduce.md` (Section 6). The evaluation script accepts multiple `--gen name=path.pt` arguments and writes a semicolon-delimited CSV (Excel-friendly).
 
 ## Repo structure (high level)
 
