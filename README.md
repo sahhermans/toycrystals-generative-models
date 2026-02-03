@@ -63,9 +63,9 @@ Lower values indicate a closer match to the test distribution.
 | method | mass_w1 (1e<sup>-3</sup>) | fft_radial_l2 (1e<sup>-3</sup>) |
 |---|---:|---:|
 | VAE + standard prior | 11.48 | 2.18 |
-| VAE + diffusion prior (DDIM 400) | **1.44** | 0.313 |
-| VAE + MoP (posterior-based reference) | 3.07 | **0.256** |
-| VP-SDE (reverse-SDE sampler) | 2.02 | 0.584 |
+| VAE + diffusion prior (DDIM 400) | **1.44** | 0.31 |
+| VAE + MoP (posterior-based reference) | 3.07 | **0.26** |
+| VP-SDE (reverse-SDE sampler) | 2.02 | 0.58 |
 | VP-SDE (probability-flow ODE) | 8.11 | 1.73 |
 
 </div>
