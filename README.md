@@ -52,6 +52,15 @@ See [`docs/reproduce.md`](docs/reproduce.md) for the exact commands used for the
 </table>
 </div>
 
+<div align="center"><b>Rotation control (in-range sweep)</b></div>
+<p align="center">
+  <img src="assets/rotation_sweep/rotation_sweep_.png" width="700" />
+</p>
+
+Above we also visualise a **rotation sweep** for a fixed lattice type. Columns sweep angles within the *trained* range (θ ∈ [0, 1.05] rad ≈ [0°, 60°]), and each row uses the same conditioning values across methods.
+
+This is a qualitative check that the rotation condition is actually reflected in generated samples. It complements the quantitative metrics below: the radial FFT score uses a radial average (so it discards orientation information), meaning a model can score well while still mishandling rotation. :contentReference[oaicite:1]{index=1}
+
 ### Quantitative (held-out test set)
 
 Scores are computed on the held-out test split using 2,048 real and 2,048 generated samples per method (see `docs/reproduce.md`). We report `mass_w1` and `fft_radial_l2` as simple, fast proxies for global intensity and lattice frequency structure, respectively.
