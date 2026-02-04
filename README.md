@@ -52,9 +52,9 @@ See [`docs/reproduce.md`](docs/reproduce.md) for the exact commands used for the
 </table>
 </div>
 
-<div align="center"><b>Rotation control (in-range sweep)</b></div>
+<div align="center"><b>Rotation control</b></div>
 <p align="center">
-  <img src="assets/rotation_sweep/rotation_sweep_.png" width="700" />
+  <img src="assets/rotation_sweep/rotation_sweep.png" width="700" />
 </p>
 
 Above we also visualise a **rotation sweep** for a fixed lattice type. Columns sweep angles within the *trained* range (θ ∈ [0, 1.05] rad ≈ [0°, 60°]), and each row uses the same conditioning values across methods.
